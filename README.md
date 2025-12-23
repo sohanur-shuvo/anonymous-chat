@@ -1,11 +1,11 @@
-# 🌐 Global Chat
+# 🌐 Anonymous Chat
 
 A real-time anonymous chat application built with **Python** and **Streamlit**. This project provides a simple yet powerful interface for users to communicate globally, complete with user authentication and an admin panel for management.
 
 ## ✨ Features
 
 *   **🔐 User Validations**: Secure sign-up and login system using hashed passwords.
-*   **💬 Global Chat**: Real-time messaging interface accessible to all registered users.
+*   **💬 Anonymous Chat**: Real-time messaging interface accessible to all registered users.
 *   **💾 Message Persistence**: Messages are stored locally, ensuring conversations aren't lost on reload (persists last 1000 messages).
 *   **⚡ Auto-Refresh**: Chat interface automatically updates to show new messages.
 *   **🛠️ Admin Panel**: Dedicated interface for system administrators to manage settings (e.g., chat refresh rate).
