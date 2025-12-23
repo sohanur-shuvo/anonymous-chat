@@ -5,6 +5,54 @@ from datetime import datetime
 from uuid import uuid4
 import time
 import hashlib
+from dotenv import load_dotenv
+import requests
+from streamlit_google_auth import Authenticate
+
+# Load environment variables
+load_dotenv()
+FIREBASE_API_KEY = os.getenv("FIREBASE_API_KEY")
+FIREBASE_DB_URL = os.getenv("FIREBASE_DB_URL")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+GOOGLE_PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "anonymous--chats")
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "Shuvo@123")
+
+if FIREBASE_DB_URL and FIREBASE_DB_URL.endswith("/"):
+    FIREBASE_DB_URL = FIREBASE_DB_URL[:-1]
+
+
+def get_google_authenticator():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        return None
+        
+    import tempfile
+    import json as json_lib
+    
+    creds_data = {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "project_id": GOOGLE_PROJECT_ID,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uris": ["http://localhost:8501"]
+        }
+    }
+    
+    creds_path = os.path.join(tempfile.gettempdir(), "google_creds.json")
+    with open(creds_path, "w") as f:
+        json_lib.dump(creds_data, f)
+
+    return Authenticate(
+        secret_credentials_path=creds_path,
+        cookie_name='google_auth_cookie',
+        cookie_key='this_is_a_secret_key', 
+        cookie_expiry_days=30,
+        redirect_uri="http://localhost:8501"
+    )
 
 # Page configuration
 st.set_page_config(
@@ -24,6 +72,17 @@ def hash_password(password):
 
 
 def load_users():
+    # Try Firebase first
+    if FIREBASE_DB_URL:
+        try:
+            response = requests.get(f"{FIREBASE_DB_URL}/users.json")
+            if response.status_code == 200:
+                users = response.json()
+                return users if users else {}
+        except Exception:
+            pass
+    
+    # Fallback to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -35,7 +94,78 @@ def load_users():
         return {}
 
 
+def firebase_auth(email, password, mode="login"):
+    """
+    mode can be 'login' or 'signup'
+    """
+    if not FIREBASE_API_KEY:
+        return {"error": "Firebase API Key not found in environment variables."}
+
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:{'signInWithPassword' if mode == 'login' else 'signUp'}?key={FIREBASE_API_KEY}"
+    
+    payload = {
+        "email": email,
+        "password": password,
+        "returnSecureToken": True
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        data = response.json()
+        
+        if response.status_code == 200:
+            return {"success": True, "localId": data["localId"], "email": data["email"]}
+        else:
+            error_message = data.get("error", {}).get("message", "Unknown error")
+            return {"success": False, "error": error_message}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def firebase_google_login(id_token):
+    """
+    Authenticate with Firebase using a Google ID Token
+    """
+    if not FIREBASE_API_KEY:
+        return {"error": "Firebase API Key not found"}
+
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key={FIREBASE_API_KEY}"
+    
+    payload = {
+        "postBody": f"id_token={id_token}&providerId=google.com",
+        "requestUri": "http://localhost",
+        "returnSecureToken": True
+    }
+    
+    try:
+        response = requests.post(url, json=payload)
+        data = response.json()
+        
+        if response.status_code == 200:
+            return {
+                "success": True, 
+                "localId": data["localId"], 
+                "email": data["email"],
+                "displayName": data.get("displayName", "Google User")
+            }
+        else:
+            return {"success": False, "error": data.get("error", {}).get("message", "Unknown error")}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def load_admin_settings():
+    # Try Firebase first
+    if FIREBASE_DB_URL:
+        try:
+            response = requests.get(f"{FIREBASE_DB_URL}/admin_settings.json")
+            if response.status_code == 200:
+                settings = response.json()
+                return settings if settings else {"auto_refresh_interval": 2}
+        except Exception:
+            pass
+
+    # Fallback to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -48,6 +178,14 @@ def load_admin_settings():
 
 
 def save_admin_settings(settings):
+    # Save to Firebase
+    if FIREBASE_DB_URL:
+        try:
+            requests.put(f"{FIREBASE_DB_URL}/admin_settings.json", json=settings)
+        except Exception:
+            pass
+
+    # Save to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -58,6 +196,14 @@ def save_admin_settings(settings):
 
 
 def save_users(users):
+    # Save to Firebase
+    if FIREBASE_DB_URL:
+        try:
+            requests.put(f"{FIREBASE_DB_URL}/users.json", json=users)
+        except Exception:
+            pass
+
+    # Save to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -68,6 +214,15 @@ def save_users(users):
 
 
 def save_global_chat_message(message):
+    # Save to Firebase
+    if FIREBASE_DB_URL:
+        try:
+            # In Realtime DB, we can use POST to push to a list
+            requests.post(f"{FIREBASE_DB_URL}/messages.json", json=message)
+        except Exception:
+            pass
+
+    # Save to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -93,6 +248,21 @@ def save_global_chat_message(message):
 
 
 def load_global_chat():
+    # Try Firebase first
+    if FIREBASE_DB_URL:
+        try:
+            response = requests.get(f"{FIREBASE_DB_URL}/messages.json")
+            if response.status_code == 200:
+                messages_dict = response.json()
+                if messages_dict:
+                    # Convert dict values to list if it's a dict of pushed items
+                    if isinstance(messages_dict, dict):
+                        return list(messages_dict.values())
+                    return messages_dict
+        except Exception:
+            pass
+
+    # Fallback to local
     try:
         if not os.path.exists("database"):
             os.makedirs("database")
@@ -109,6 +279,14 @@ def load_global_chat():
 
 
 def clear_global_chat():
+    # Clear Firebase
+    if FIREBASE_DB_URL:
+        try:
+            requests.delete(f"{FIREBASE_DB_URL}/messages.json")
+        except Exception:
+            pass
+
+    # Clear Local
     try:
         global_chat_file = "database/global_chat.json"
         if os.path.exists(global_chat_file):
@@ -119,6 +297,16 @@ def clear_global_chat():
 
 
 def initialize_session():
+    # Immediate check for hard logout in URL
+    if st.query_params.get("logout") == "true":
+        st.session_state.authenticated = False
+        st.session_state.manual_logout = True
+        st.session_state.is_admin = False
+        if 'connected' in st.session_state:
+            st.session_state.connected = False
+        # Clear the parameter so it doesn't block future login attempts
+        st.query_params.clear()
+    
     if "authenticated" not in st.session_state:
         st.session_state.authenticated = False
     if "current_user" not in st.session_state:
@@ -127,6 +315,8 @@ def initialize_session():
         st.session_state.is_admin = False
     if "last_global_check" not in st.session_state:
         st.session_state.last_global_check = time.time()
+    if "manual_logout" not in st.session_state:
+        st.session_state.manual_logout = False
 
 
 def login_form():
@@ -137,34 +327,81 @@ def login_form():
         </div>
     """, unsafe_allow_html=True)
 
+    if not FIREBASE_API_KEY:
+        st.warning("⚠️ Firebase API Key is missing. Local authentication will be used. Please set FIREBASE_API_KEY in your .env file.")
+
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         tab1, tab2, tab3 = st.tabs(["Login", "Sign Up", "Admin"])
 
         with tab1:
             with st.form("login_form"):
-                username = st.text_input("Username", placeholder="Enter username")
+                email = st.text_input("Email", placeholder="Enter your email")
                 password = st.text_input("Password", type="password", placeholder="Enter password")
                 login_button = st.form_submit_button("Login", use_container_width=True)
 
                 if login_button:
-                    users = load_users()
-                    if username in users:
-                        stored_password = users[username]["password"]
-                        if stored_password == hash_password(password):
-                            if users[username].get("status", "active") == "banned":
-                                st.error("Your account has been banned. Please contact admin.")
+                    if FIREBASE_API_KEY:
+                        result = firebase_auth(email, password, mode="login")
+                        if result.get("success"):
+                            # Find username by email
+                            users = load_users()
+                            username = None
+                            for uname, udata in users.items():
+                                if udata.get("email") == email:
+                                    username = uname
+                                    break
+                            
+                            if username:
+                                if users[username].get("status", "active") == "banned":
+                                    st.error("Your account has been banned. Please contact admin.")
+                                else:
+                                    st.session_state.authenticated = True
+                                    st.session_state.current_user = username
+                                    st.session_state.is_admin = False
+                                    st.success("Login successful! Redirecting...")
+                                    time.sleep(1)
+                                    st.rerun()
                             else:
+                                # First time login with this email but no local profile
+                                # Create a default username from email
+                                username = email.split("@")[0]
+                                users[username] = {
+                                    "name": username,
+                                    "email": email,
+                                    "status": "active",
+                                    "created_at": datetime.now().isoformat(),
+                                    "last_login": datetime.now().isoformat()
+                                }
+                                save_users(users)
                                 st.session_state.authenticated = True
                                 st.session_state.current_user = username
                                 st.session_state.is_admin = False
-                                st.success("Login successful! Redirecting...")
+                                st.success("Logged in and profile created!")
                                 time.sleep(1)
                                 st.rerun()
                         else:
-                            st.error("Invalid username or password")
+                            st.error(f"Login failed: {result.get('error')}")
                     else:
-                        st.error("Invalid username or password")
+                        # Fallback to local authentication (username instead of email)
+                        users = load_users()
+                        username = email # Treatment of email field as username for fallback
+                        if username in users:
+                            stored_password = users[username].get("password")
+                            if stored_password == hash_password(password):
+                                if users[username].get("status", "active") == "banned":
+                                    st.error("Your account has been banned.")
+                                else:
+                                    st.session_state.authenticated = True
+                                    st.session_state.current_user = username
+                                    st.session_state.is_admin = False
+                                    st.success("Login successful!")
+                                    time.sleep(1)
+                                    st.rerun()
+                            else:
+                                st.error("Invalid credentials")
+                        else:
+                            st.error("Invalid credentials")
 
         with tab2:
             with st.form("signup_form"):
@@ -176,50 +413,162 @@ def login_form():
 
                 if signup_button:
                     if new_name and new_email and new_username and new_password:
-                        users = load_users()
-                        if new_username not in users:
-                            users[new_username] = {
-                                "name": new_name,
-                                "email": new_email,
-                                "password": hash_password(new_password),
-                                "status": "active",
-                                "created_at": datetime.now().isoformat(),
-                                "last_login": datetime.now().isoformat()
-                            }
-                            save_users(users)
-                            st.session_state.authenticated = True
-                            st.session_state.current_user = new_username
-                            st.session_state.is_admin = False
-                            st.success("Account created successfully! Logging you in...")
-                            time.sleep(1)
-                            st.rerun()
+                        if FIREBASE_API_KEY:
+                            result = firebase_auth(new_email, new_password, mode="signup")
+                            if result.get("success"):
+                                users = load_users()
+                                if new_username not in users:
+                                    users[new_username] = {
+                                        "name": new_name,
+                                        "email": new_email,
+                                        "status": "active",
+                                        "created_at": datetime.now().isoformat(),
+                                        "last_login": datetime.now().isoformat()
+                                    }
+                                    save_users(users)
+                                    st.session_state.authenticated = True
+                                    st.session_state.current_user = new_username
+                                    st.session_state.is_admin = False
+                                    st.success("Account created successfully!")
+                                    time.sleep(1)
+                                    st.rerun()
+                                else:
+                                    st.error("Username already exists locally. Please choose another.")
+                            else:
+                                st.error(f"SignUp failed: {result.get('error')}")
                         else:
-                            st.error("Username already exists")
+                            # Fallback local signup
+                            users = load_users()
+                            if new_username not in users:
+                                users[new_username] = {
+                                    "name": new_name,
+                                    "email": new_email,
+                                    "password": hash_password(new_password),
+                                    "status": "active",
+                                    "created_at": datetime.now().isoformat(),
+                                    "last_login": datetime.now().isoformat()
+                                }
+                                save_users(users)
+                                st.session_state.authenticated = True
+                                st.session_state.current_user = new_username
+                                st.session_state.is_admin = False
+                                st.success("Local account created!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("Username already exists")
                     else:
                         st.error("Please fill in all fields")
 
         with tab3:
             with st.form("admin_form"):
-                admin_username = st.text_input("Admin Username", placeholder="Enter admin username")
-                admin_password = st.text_input("Admin Password", type="password", placeholder="Enter admin password")
+                admin_user_input = st.text_input("Admin Username", placeholder="Enter admin username")
+                admin_pass_input = st.text_input("Admin Password", type="password", placeholder="Enter admin password")
                 admin_login_button = st.form_submit_button("Admin Login", use_container_width=True)
 
                 if admin_login_button:
-                    if admin_username == "Admin" and admin_password == "Shuvo@123":
+                    # Strip whitespace to prevent login failures
+                    admin_user_input = admin_user_input.strip()
+                    admin_pass_input = admin_pass_input.strip()
+                    
+                    if admin_user_input == ADMIN_USERNAME and admin_pass_input == ADMIN_PASSWORD:
                         st.session_state.authenticated = True
-                        st.session_state.current_user = "Admin"
+                        st.session_state.current_user = ADMIN_USERNAME
                         st.session_state.is_admin = True
+                        st.session_state.manual_logout = False
                         st.success("Admin login successful! Redirecting...")
                         time.sleep(1)
                         st.rerun()
                     else:
                         st.error("Invalid admin credentials")
 
+        # Google Login Section
+        authenticator = get_google_authenticator()
+        if authenticator:
+            # Force logout logic
+            if st.query_params.get("logout") == "true":
+                st.session_state.manual_logout = True
+                st.session_state.authenticated = False
+                if "connected" in st.session_state:
+                    st.session_state.connected = False
+
+            # ONLY run Google check if NOT in a manual logout state
+            if not st.session_state.get('manual_logout', False):
+                try:
+                    authenticator.check_authentification()
+                except Exception:
+                    pass
+            
+            # Only show Google UI if NOT authenticated session-wise
+            if not st.session_state.authenticated:
+                st.markdown("<div style='text-align: center; margin: 1rem 0;'>OR</div>", unsafe_allow_html=True)
+                
+                # If we are connected but it's a manual logout, reset the 'connected' state
+                if st.session_state.get('manual_logout', False):
+                    if 'connected' in st.session_state:
+                        st.session_state.connected = False
+                    if 'user_info' in st.session_state:
+                        st.session_state.user_info = None
+
+                if not st.session_state.get('connected', False):
+                    if st.button("🚀 Sign in with Google", use_container_width=True, type="primary"):
+                        st.session_state.manual_logout = False
+                        st.session_state.authenticated = False
+                        st.query_params.clear() 
+                        authenticator.login()
+                else:
+                    user_info = st.session_state.get('user_info')
+                    if user_info:
+                        st.session_state.manual_logout = False
+                        st.query_params.clear()
+                        
+                        email = user_info.get('email')
+                        name = user_info.get('name', user_info.get('given_name', email.split('@')[0]))
+                        
+                        users = load_users()
+                        username = None
+                        for uname, udata in users.items():
+                            if udata.get("email") == email:
+                                username = uname
+                                break
+                        
+                        if not username:
+                            username = email.split("@")[0]
+                            users[username] = {
+                                "name": name,
+                                "email": email,
+                                "status": "active",
+                                "created_at": datetime.now().isoformat(),
+                                "last_login": datetime.now().isoformat()
+                            }
+                            save_users(users)
+                        
+                        st.session_state.authenticated = True
+                        st.session_state.current_user = username
+                        st.session_state.is_admin = False
+                        st.rerun()
+
 
 def logout():
+    # Call Google logout if applicable
+    authenticator = get_google_authenticator()
+    if authenticator:
+        try:
+            authenticator.logout()
+        except:
+            pass
+
+    # Clear everything!
+    st.session_state.clear()
+        
     st.session_state.authenticated = False
     st.session_state.current_user = None
     st.session_state.is_admin = False
+    st.session_state.manual_logout = True
+    
+    # Set query param to ensure next run knows we just logged out
+    st.query_params.logout = "true"
+    
     st.rerun()
 
 
