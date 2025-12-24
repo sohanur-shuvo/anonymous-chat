@@ -770,7 +770,7 @@ def global_chat_interface():
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Anonymous Chat")
-        st.caption("Your messages on right, others on left")
+        st.caption("All messages are anonymous • Your messages on right, others on left")
     with col2:
         if st.button("Logout", use_container_width=True):
             logout()
@@ -859,7 +859,7 @@ def global_chat_interface():
                 st.markdown(f"""
                 <div class="message-row-right">
                     <div class="message-content">
-                        <div>{content}</div>
+                        <div><strong>You:</strong> {content}</div>
                         <div class="message-time">{timestamp}</div>
                     </div>
                 </div>
@@ -868,7 +868,7 @@ def global_chat_interface():
                 st.markdown(f"""
                 <div class="message-row-left">
                     <div class="message-content">
-                        <div><strong>{message_user}:</strong> {content}</div>
+                        <div><strong>Anonymous:</strong> {content}</div>
                         <div class="message-time">{timestamp}</div>
                     </div>
                 </div>
